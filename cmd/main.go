@@ -158,6 +158,38 @@ func shutdownHook() {
 	}()
 }
 
+func handleExecute(comm execute.Command) func(c *fiber.Ctx) error {
+	return func(c *fiber.Ctx) error {
+
+		if comm.Validate {
+			if comm.SchemaType == "avro" {
+				if err := execute.ValidateAvro(comm, string(c.Body())); err != nil {
+					log.Error("Trigger: \"%v\" will not be executed", comm.Name)
+					return c.Status(400).JSON(map[string]string{
+						"type":    "ERROR",
+						"message": err.Error(),
+					})
+				}
+			} else if comm.SchemaType == "json" {
+				if err := execute.ValidateJSON(comm, string(c.Body())); err != nil {
+					log.Error("Trigger: \"%v\" will not be executed", comm.Name)
+					return c.Status(400).JSON(map[string]string{
+						"type":    "ERROR",
+						"message": err.Error(),
+					})
+				}
+			}
+		}
+
+		go execute.Execute(comm, string(c.Body()))
+
+		return c.JSON(map[string]string{
+			"type":    "SUCCESS",
+			"message": "Task:" + comm.Name + " has been executed",
+		})
+	}
+}
+
 func main() {
 	godotenv.Load()
 	app := fiber.New()
@@ -203,7 +235,9 @@ func main() {
 			count++
 		} else {
 			log.Info("Trigger(%v) protocol(%v): \"%v\" is listening to target: %v", command.Type, command.Protocol, command.Name, command.Target)
-			if command.Protocol == "pubsub" {
+
+			switch command.Protocol {
+			case "pubsub":
 				go func(c execute.Command) {
 					err := pubsub.PullMsgs(ctx, os.Getenv("PROJECT_ID"), c.Target, func(data string) {
 						go execute.Execute(c, data)
@@ -217,20 +251,8 @@ func main() {
 					exitChan <- 0
 				}(command)
 				count++
-			} else if command.Protocol == "http" {
-				app.Post(command.Target, func(c *fiber.Ctx) error {
-					go execute.Execute(command, string(c.Body()))
-					// if err != nil {
-					// 	return c.JSON(map[string]string{
-					// 		"type":    "ERROR",
-					// 		"message": err.Error(),
-					// 	})
-					// }
-					return c.JSON(map[string]string{
-						"type":    "SUCCESS",
-						"message": "Task:" + command.Name + " has been executed",
-					})
-				})
+			case "http":
+				app.Post(command.Target, handleExecute(command))
 			}
 		}
 	}
